@@ -92,7 +92,7 @@ class GPTWrapper:
             base_url=self.key_list[self.key_index].get('base_url', None)
             )
         
-    @backoff.on_exception(backoff.expo, openai.error.RateLimitError)
+    @backoff.on_exception(backoff.expo, openai.RateLimitError)
     def completions_with_backoff(
             self,
             messages,
@@ -143,7 +143,7 @@ class GPTWrapper:
                         for choice in completion['choices']:
                             responses[choice['index']] = choice['text']
                         return responses
-                elif 'turbo' in engine or 'gpt-4' in engine:
+                elif 'gpt-3.5' in engine or 'gpt-4' in engine:
                         completion = self.client.chat.completions.create(
                             model=engine,
                             messages=messages,
@@ -151,7 +151,7 @@ class GPTWrapper:
                             max_tokens=max_tokens,
                             top_p=top_p,
                             frequency_penalty=frequency_penalty,
-                            presence_penalty=presence_penalty
+                            presence_penalty=presence_penalty,
                             **kwargs
                         )
                         return completion["choices"][0]["message"]["content"]
