@@ -157,7 +157,7 @@ class GPTWrapper:
                         return completion["choices"][0]["message"]["content"]
                 else:
                     raise NotImplementedError('Currently only support `davinci`, `turbo` and `gpt-4`')
-            except openai.error.RateLimitError as ex:
+            except openai.RateLimitError as ex:
                 if 'Rate limit reached' in str(ex):
                     raise ex
                 elif 'exceeded' in str(ex):
@@ -166,13 +166,13 @@ class GPTWrapper:
                 else:
                     print(f'RateLimiteError unhandled...')
                     raise ex
-            except openai.error.InvalidRequestError as ex:
+            except openai.BadRequestError as ex:
                 if 'have access to' in str(ex):
                     print(ex)
                     self.set_api_key()
                 else:
                     raise ex
-            except openai.error.AuthenticationError as ex:
+            except openai.AuthenticationError as ex:
                 if 'deactivated' in str(ex):
                     print(f'Api key: {self.key_list[self.key_index]["key"]} has been deactivated. Origin error message: {ex}')
                     self.set_api_key()
