@@ -83,6 +83,27 @@ robot.send('hello world')
 
 GPTWrapper封装了请求`openai`的`ChatComplementions`和`Completions`的行为，同时包含多线程和多进程版本。
 包含了对各种`OpenAIError`的处理逻辑，如果所有`api_key`均已用尽，则会阻塞程序并监听`config.json`的变化，直到`config.json`发生改变且依然符合JSON文件格式，则会重新尝试恢复请求。
+请求时会默认使用`config.json`中`key_index`下标的`api_key`，当用量用尽则使用下一个`api_key`。对于多线程或多进程情况，将根据进程数量分别为不同进程选择不同的初始`key_index`以保证不同的线程使用不同`api_key`，从而减小并发压力，降低出现`RatetimeLimit`的概率
+
+`config.json`文件的示例如下:
+```json
+{
+    "key_index": 0,                     // 默认使用的api_key的下标
+    "key_list": [
+        {
+            "api_key": "sk-xxxx"
+        },
+        {
+            "api_key": "sk-xxxx",
+            "organization": "org-xxxx"  // optional
+        },
+        {
+            "api_key": "sk-xxxx",
+            "base_url": "https://xxxx"  // optional
+        }
+    ]
+}
+```
 
 ### 使用样例
 #### 单次GPT会话请求

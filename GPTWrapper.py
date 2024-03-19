@@ -128,7 +128,7 @@ class GPTWrapper:
         sleep_Time = 1
         while True:
             try:
-                if 'davinci' in engine or 'turbo-instruct' in engine:
+                if any(k in engine for k in ['davinci', 'turbo-instruct']):
                         completion = self.client.completions.create(
                             model=engine,
                             prompt=messages,
@@ -143,7 +143,7 @@ class GPTWrapper:
                         for choice in completion['choices']:
                             responses[choice['index']] = choice['text']
                         return responses
-                elif 'gpt-3.5' in engine or 'gpt-4' in engine:
+                elif any(k in engine for k in ['gpt-3.5', 'gpt-4']):
                         completion = self.client.chat.completions.create(
                             model=engine,
                             messages=messages,
@@ -266,9 +266,9 @@ class GPTWrapper:
         def __generate_response(wrapper: GPTWrapper, engine: str, system_prompts: List[str], prompts: List[str], fout: str, **kwargs):
             results = []
             for system_prompt, prompt in zip(system_prompts, prompts):
-                if 'davinci' or 'turbo-instruct' in engine:
+                if any(k in engine for k in ['davinci', 'turbo-instruct']):
                     messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
-                elif 'gpt-3.5' or 'gpt-4' in engine:
+                elif any(k in engine for k in ['gpt-3.5', 'gpt-4']):
                     messages = [
                         {
                             'role': 'system',
@@ -303,7 +303,7 @@ class GPTWrapper:
         for i in range(processes_num):
             wrapper = GPTWrapper(config_path=config_path, bias=i, lark_hook=lark_hook)
             system_prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
-            prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
+            prompts_subset = prompts[i*chunk_size:(i+1)*chunk_size]
             
             process = Process(target=__generate_response, args=(wrapper, engine, system_prompts_subset, prompts_subset, f'worker{i}_{fout}'), kwargs=kwargs)
             processes.append(process)
@@ -407,12 +407,12 @@ class GPTWrapper:
                 system_prompts = system_prompts[len(results):]
             prompts = prompts[len(results):]
             for system_prompt, prompt in zip(system_prompts, prompts):
-                if 'davinci' or 'turbo-instruct' in engine:
+                if any(k in engine for k in ['davinci', 'turbo-instruct']):
                     if system_prompt:
                         messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
                     else:
                         messages = prompt
-                elif 'gpt-3.5' or 'gpt-4' in engine:
+                elif any(k in engine for k in ['gpt-3.5', 'gpt-4']):
                     if system_prompt:
                         messages = [
                             {
@@ -444,7 +444,8 @@ class GPTWrapper:
                     'response': response
                 }
                 results.append(result)
-                fp.write(json.dumps(result, ensure_ascii=False)+'\n')
+                with open(fout, 'a') as fp:
+                    fp.write(json.dumps(result, ensure_ascii=False)+'\n')
                 
             return results
         
