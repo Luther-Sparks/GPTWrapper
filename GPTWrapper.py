@@ -12,6 +12,7 @@ from multiprocessing import Process, Manager, Queue
 import inspect
 import queue
 import openai
+import tiktoken
 
 class CustomHandler(FileSystemEventHandler):
     def __init__(self, event):
@@ -102,6 +103,7 @@ class GPTWrapper:
             top_p=1,
             frequency_penalty=0,
             presence_penalty=0,
+            get_tokens=False,
             **kwargs
         ):
         """create a completion with gpt. Currently support `davinci`, `turbo` and `gpt-4`
@@ -122,10 +124,16 @@ class GPTWrapper:
             response(str) for `turbo` and `gpt-4`
             responses(List[str]) for `davinci`
         """
-        openai.api_key = self.key_list[self.key_index]['key']
+        openai.api_key = self.key_list[self.key_index]['api_key']
         if 'org' in self.key_list[self.key_index]:
-            openai.organization = self.key_list[self.key_index]['org']
+            openai.organization = self.key_list[self.key_index]['organization']
+        if 'base_url' in self.key_list[self.key_index]:
+            openai.base_url = self.key_list[self.key_index]['base_url']
         sleep_Time = 1
+        if get_tokens:
+            encoding = tiktoken.encoding_for_model(engine)
+            input_tokens = len(''.join([m['content'] for m in messages]))
+
         while True:
             try:
                 if 'davinci' in engine or 'turbo-instruct' in engine:
@@ -140,8 +148,11 @@ class GPTWrapper:
                             **kwargs
                         )
                         responses = [""]*len(messages)
-                        for choice in completion['choices']:
-                            responses[choice['index']] = choice['text']
+                        for choice in completion.choices:
+                            responses[choice['index']] = choice.text
+                        if get_tokens:
+                            output_tokens = len(encoding.encode(''.join(responses)))
+                            return responses, input_tokens, output_tokens
                         return responses
                 elif 'gpt-3.5' in engine or 'gpt-4' in engine:
                         completion = self.client.chat.completions.create(
@@ -154,7 +165,11 @@ class GPTWrapper:
                             presence_penalty=presence_penalty,
                             **kwargs
                         )
-                        return completion["choices"][0]["message"]["content"]
+                        response = completion.choices[0].message.content
+                        if get_tokens:
+                            output_tokens = len(encoding.encode(response))
+                            return response, input_tokens, output_tokens
+                        return completion.choices[0].message.content
                 else:
                     raise NotImplementedError('Currently only support `davinci`, `turbo` and `gpt-4`')
             except openai.RateLimitError as ex:
@@ -281,16 +296,33 @@ class GPTWrapper:
                     ]
                 else:
                     raise NotImplementedError('Currently only support `davinci`, `gpt-3.5` and `gpt-4`')
-                response = wrapper.completions_with_backoff(
-                    messages=messages,
-                    engine=engine,
-                    **kwargs
-                )
-                result = {
-                    'system_prompt': system_prompt,
-                    'prompt': prompt,
-                    'response': response
-                }
+                get_tokens = kwargs.pop('get_tokens', False)
+                if get_tokens:
+                    response, input_tokens, output_tokens = wrapper.completions_with_backoff(
+                        messages=messages,
+                        engine=engine,
+                        get_tokens=get_tokens,
+                        **kwargs
+                    )
+                    result = {
+                        'system_prompt': system_prompt,
+                        'prompt': prompt,
+                        'response': response,
+                        'input_tokens': input_tokens,
+                        'output_tokens': output_tokens
+                    }
+                else:
+                    response = wrapper.completions_with_backoff(
+                        messages=messages,
+                        engine=engine,
+                        get_tokens=get_tokens,
+                        **kwargs
+                    )
+                    result = {
+                        'system_prompt': system_prompt,
+                        'prompt': prompt,
+                        'response': response
+                    }
                 results.append(result)
                 with open(fout, 'a', encoding='utf-8') as fp:
                     fp.write(json.dumps(result, ensure_ascii=False)+'\n')
@@ -433,16 +465,32 @@ class GPTWrapper:
                         ]
                 else:
                     raise NotImplementedError('Currently only support `davinci`, `gpt-3.5` and `gpt-4`')
-                response = wrapper.completions_with_backoff(
-                    messages=messages,
-                    engine=engine,
-                    **kwargs
-                )
-                result = {
-                    'system_prompt': system_prompt,
-                    'prompt': prompt,
-                    'response': response
-                }
+                get_tokens = kwargs.pop('get_tokens', False)
+                if get_tokens:
+                    response, input_tokens, output_tokens = wrapper.completions_with_backoff(
+                        messages=messages,
+                        engine=engine,
+                        get_tokens=get_tokens,
+                        **kwargs
+                    )
+                    result = {
+                        'system_prompt': system_prompt,
+                        'prompt': prompt,
+                        'response': response,
+                        'input_tokens': input_tokens,
+                        'output_tokens': output_tokens
+                    }
+                else:
+                    response = wrapper.completions_with_backoff(
+                        messages=messages,
+                        engine=engine,
+                        **kwargs
+                    )
+                    result = {
+                        'system_prompt': system_prompt,
+                        'prompt': prompt,
+                        'response': response
+                    }
                 results.append(result)
                 fp.write(json.dumps(result, ensure_ascii=False)+'\n')
                 

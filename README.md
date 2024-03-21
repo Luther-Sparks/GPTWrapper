@@ -102,6 +102,22 @@ response = wrapper.completions_with_backoff(
     top_p=top_p, 
     frequency_penalty=frequency_penalty, 
     presence_penalty=presence_penalty,
+    get_tokens=get_tokens,    # 是否获取token数量
+    **kwargs    # other parameters to pass to gpt
+)
+```
+
+如果有计算`token`数量的需求，可以设置`get_tokens`为`True`，则会分别返回`response`, `input_tokens`, `output_tokens`三个值，即
+```python
+response, input_tokens, output_tokens = wrapper.completions_with_backoff(
+    engine=engine, 
+    messages=messages, 
+    temperature=temperature, 
+    max_tokens=max_tokens, 
+    top_p=top_p, 
+    frequency_penalty=frequency_penalty, 
+    presence_penalty=presence_penalty,
+    get_tokens=True,    # 是否获取token数量
     **kwargs    # other parameters to pass to gpt
 )
 ```
