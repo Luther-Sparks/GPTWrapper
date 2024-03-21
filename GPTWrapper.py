@@ -125,18 +125,23 @@ class GPTWrapper:
             responses(List[str]) for `davinci`
         """
         openai.api_key = self.key_list[self.key_index]['api_key']
-        if 'org' in self.key_list[self.key_index]:
+        if 'organization' in self.key_list[self.key_index]:
             openai.organization = self.key_list[self.key_index]['organization']
         if 'base_url' in self.key_list[self.key_index]:
             openai.base_url = self.key_list[self.key_index]['base_url']
         sleep_Time = 1
         if get_tokens:
             encoding = tiktoken.encoding_for_model(engine)
-            input_tokens = len(''.join([m['content'] for m in messages]))
+            if len(messages) >= 1 and type(messages[0]) == dict:
+                input_tokens = len(''.join([m['content'] for m in messages]))
+            elif len(messages) >= 1 and type(messages[0]) == str:
+                input_tokens = len(''.join(messages))
+            else:
+                input_tokens = 0
 
         while True:
             try:
-                if 'davinci' in engine or 'turbo-instruct' in engine:
+                if any(x in engine for x in ['davinci', 'turbo-instruct']):
                         completion = self.client.completions.create(
                             model=engine,
                             prompt=messages,
@@ -154,7 +159,7 @@ class GPTWrapper:
                             output_tokens = len(encoding.encode(''.join(responses)))
                             return responses, input_tokens, output_tokens
                         return responses
-                elif 'gpt-3.5' in engine or 'gpt-4' in engine:
+                elif any(x in engine for x in ['gpt-3.5', 'gpt-4']):
                         completion = self.client.chat.completions.create(
                             model=engine,
                             messages=messages,
@@ -281,9 +286,9 @@ class GPTWrapper:
         def __generate_response(wrapper: GPTWrapper, engine: str, system_prompts: List[str], prompts: List[str], fout: str, **kwargs):
             results = []
             for system_prompt, prompt in zip(system_prompts, prompts):
-                if 'davinci' or 'turbo-instruct' in engine:
+                if any(x in engine for x in ['davinci', 'turbo-instruct']):
                     messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
-                elif 'gpt-3.5' or 'gpt-4' in engine:
+                elif any(x in engine for x in ['gpt-3.5', 'gpt-4']):
                     messages = [
                         {
                             'role': 'system',
@@ -439,12 +444,12 @@ class GPTWrapper:
                 system_prompts = system_prompts[len(results):]
             prompts = prompts[len(results):]
             for system_prompt, prompt in zip(system_prompts, prompts):
-                if 'davinci' or 'turbo-instruct' in engine:
+                if any(x in engine for x in ['davinci', 'turbo-instruct']):
                     if system_prompt:
                         messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
                     else:
                         messages = prompt
-                elif 'gpt-3.5' or 'gpt-4' in engine:
+                elif any(x in engine for x in ['gpt-3.5', 'gpt-4']):
                     if system_prompt:
                         messages = [
                             {
@@ -492,8 +497,8 @@ class GPTWrapper:
                         'response': response
                     }
                 results.append(result)
-                fp.write(json.dumps(result, ensure_ascii=False)+'\n')
-                
+                with open(fout, 'a', encoding='utf-8') as fp:
+                    fp.write(json.dumps(result, ensure_ascii=False)+'\n')
             return results
         
         chunk_size = round(len(prompts)/threads_num)
