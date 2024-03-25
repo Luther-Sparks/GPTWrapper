@@ -6,7 +6,7 @@ import datetime
 from time import sleep
 from .larknotice import LarkBot
 from watchdog.observers import Observer
-from typing import List, Callable, Iterable, Dict, Union
+from typing import List, Callable, Iterable, Dict, Union, Tuple
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 from multiprocessing import Process, Manager, Queue
 import inspect
@@ -105,7 +105,7 @@ class GPTWrapper:
             presence_penalty=0,
             get_tokens=False,
             **kwargs
-        ):
+        ) -> Union[Tuple[str, int, int], str]:
         """create a completion with gpt. Currently support `davinci`, `turbo` and `gpt-4`
 
         Args:
@@ -133,9 +133,9 @@ class GPTWrapper:
         if get_tokens:
             encoding = tiktoken.encoding_for_model(engine)
             if len(messages) >= 1 and type(messages[0]) == dict:
-                input_tokens = len(''.join([m['content'] for m in messages]))
+                input_tokens = len(encoding.encode(''.join([m['content'] for m in messages])))
             elif len(messages) >= 1 and type(messages[0]) == str:
-                input_tokens = len(''.join(messages))
+                input_tokens = len(encoding.encode(''.join(messages)))
             else:
                 input_tokens = 0
 
