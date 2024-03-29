@@ -6,13 +6,55 @@ import datetime
 from time import sleep
 from .larknotice import LarkBot
 from watchdog.observers import Observer
-from typing import List, Callable, Iterable, Dict, Union
+from typing import List, Callable, Iterable, Dict, Union, Tuple
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 from multiprocessing import Process, Manager, Queue
 import inspect
 import queue
 import openai
 import tiktoken
+
+
+def _wrapper_func(pid, result_queue: Queue, error_queue: Queue, wrapper: 'GPTWrapper', func: Callable, data_chunk, *args, **kwargs):
+    try:
+        result = func(pid, wrapper, data_chunk, *args, **kwargs)
+        result_queue.put(result)
+    except Exception as e:
+        error_queue.put((pid, e))
+
+def _generate_response(wrapper: 'GPTWrapper', engine: str, messages: List[Union[Dict, str]], fout: str, **kwargs):
+    results = []
+    for message in messages:
+        get_tokens = kwargs.pop('get_tokens', False)
+        result = {}
+        if get_tokens:
+            response, input_tokens, output_tokens = wrapper.completions_with_backoff(
+                messages=message,
+                engine=engine,
+                get_tokens=get_tokens,
+                **kwargs
+            )
+            result['input_tokens'] = input_tokens
+            result['output_tokens'] = output_tokens
+        else:
+            response = wrapper.completions_with_backoff(
+                messages=message,
+                engine=engine,
+                get_tokens=get_tokens,
+                **kwargs
+            )
+        system_prompt = message[0]['content'] if type(message) == list and len(message) == 2 else None
+        prompt = message[1]['content'] if type(message) == list and len(message) == 2 else message
+        result = {
+            'system_prompt': system_prompt,
+            'prompt': prompt,
+            'response': response
+        }
+        results.append(result)
+        with open(fout, 'a', encoding='utf-8') as fp:
+            fp.write(json.dumps(result, ensure_ascii=False)+'\n')
+        
+    return results
 
 class CustomHandler(FileSystemEventHandler):
     def __init__(self, event):
@@ -51,6 +93,32 @@ class GPTWrapper:
             base_url=self.key_list[self.key_index].get('base_url', None)
             )
         
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if 'lark_bot' in state:
+            del state['lark_bot']
+        if 'client' in state:
+            state['client'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if 'lark_hook' in state:
+            try:
+                self.lark_bot = LarkBot(state['lark_hook'])
+            except Exception as e:
+                print(f'Error: {e}\nLark notice is not available.')
+                print(f'Will run without Lark notice.')
+                self.lark_bot = None
+        
+        if 'key_list' in state and 'key_index' in state:
+            # 假设需要基于key_list和key_index重建client
+            self.client = openai.OpenAI(
+                api_key=self.key_list[self.key_index].get('api_key', None),
+                organization=self.key_list[self.key_index].get('organization', None),
+                base_url=self.key_list[self.key_index].get('base_url', None)
+            )
+
     def __send_message_periodically(self, stop_event):
         wait_turn = 0
         while not stop_event.is_set():
@@ -105,7 +173,7 @@ class GPTWrapper:
             presence_penalty=0,
             get_tokens=False,
             **kwargs
-        ):
+        ) -> Union[Tuple[str, int, int], str]:
         """create a completion with gpt. Currently support `davinci`, `turbo` and `gpt-4`
 
         Args:
@@ -133,9 +201,9 @@ class GPTWrapper:
         if get_tokens:
             encoding = tiktoken.encoding_for_model(engine)
             if len(messages) >= 1 and type(messages[0]) == dict:
-                input_tokens = len(''.join([m['content'] for m in messages]))
+                input_tokens = len(encoding.encode(''.join([m['content'] for m in messages])))
             elif len(messages) >= 1 and type(messages[0]) == str:
-                input_tokens = len(''.join(messages))
+                input_tokens = len(encoding.encode(''.join(messages)))
             else:
                 input_tokens = 0
 
@@ -233,12 +301,6 @@ class GPTWrapper:
         
         lark_hook = kwargs.pop('lark_hook', None)
         
-        def __wrapper_func(pid, result_queue: Queue, wrapper, data_chunk, *args, **kwargs):
-            try:
-                result = func(pid, wrapper, data_chunk, *args, **kwargs)
-                result_queue.put(result)
-            except Exception as e:
-                error_queue.put((pid, e))
         
         chunk_size = round(len(data)/processes_num)
         processes = []
@@ -246,7 +308,7 @@ class GPTWrapper:
         for i in range(processes_num):
             wrapper = GPTWrapper(config_path=config_path, bias=i, lark_hook=lark_hook)
             data_chunk = data[i*chunk_size:(i+1)*chunk_size]
-            process = Process(target=__wrapper_func, args=(i, result_queue[i], wrapper, data_chunk, *args), kwargs=kwargs)
+            process = Process(target=_wrapper_func, args=(i, result_queue[i], error_queue, wrapper, func, data_chunk, *args), kwargs=kwargs)
             processes.append(process)
             process.start()
         
@@ -267,7 +329,7 @@ class GPTWrapper:
         return results
         
     @staticmethod
-    def single_round_multi_process(config_path: str, engine: str, processes_num: int, system_prompts: List, prompts: List, fout: str, **kwargs):
+    def single_round_multi_process(config_path: str, engine: str, processes_num: int, messages: List[Union[Dict, str]], fout: str, **kwargs):
         """Use system prompts and prompts to generate response with multiple processes. If engine is not a chat model, prompt will be formatted
         as `[System Prompt]: {system_prompt}\\n[Prompt]: {prompt}` if system_prompts is not None.
 
@@ -275,74 +337,21 @@ class GPTWrapper:
             config_path (str): Config file path.
             engine (str): GPT engine.
             processes_num (int): Number of processes to use.
-            system_prompts (List): System prompts.
-            prompts (List): Prompts.
+            messages (List[Union[Dict, str]]): List of messages (for chat completions) or prompts (for completions).
             fout (str): Output file. `jsonl` recommended.
 
         Returns:
             List[JSON]: List of results. 
         """
-        assert len(system_prompts) == len(prompts)
-        def __generate_response(wrapper: GPTWrapper, engine: str, system_prompts: List[str], prompts: List[str], fout: str, **kwargs):
-            results = []
-            for system_prompt, prompt in zip(system_prompts, prompts):
-                if any(x in engine for x in ['davinci', 'turbo-instruct']):
-                    messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
-                elif any(x in engine for x in ['gpt-3.5', 'gpt-4']):
-                    messages = [
-                        {
-                            'role': 'system',
-                            'content': system_prompt
-                        },
-                        {
-                            'role': 'user',
-                            'content': prompt
-                        }
-                    ]
-                else:
-                    raise NotImplementedError('Currently only support `davinci`, `gpt-3.5` and `gpt-4`')
-                get_tokens = kwargs.pop('get_tokens', False)
-                if get_tokens:
-                    response, input_tokens, output_tokens = wrapper.completions_with_backoff(
-                        messages=messages,
-                        engine=engine,
-                        get_tokens=get_tokens,
-                        **kwargs
-                    )
-                    result = {
-                        'system_prompt': system_prompt,
-                        'prompt': prompt,
-                        'response': response,
-                        'input_tokens': input_tokens,
-                        'output_tokens': output_tokens
-                    }
-                else:
-                    response = wrapper.completions_with_backoff(
-                        messages=messages,
-                        engine=engine,
-                        get_tokens=get_tokens,
-                        **kwargs
-                    )
-                    result = {
-                        'system_prompt': system_prompt,
-                        'prompt': prompt,
-                        'response': response
-                    }
-                results.append(result)
-                with open(fout, 'a', encoding='utf-8') as fp:
-                    fp.write(json.dumps(result, ensure_ascii=False)+'\n')
-                
-            return results
         
-        chunk_size = round(len(prompts)/processes_num)
+        chunk_size = round(len(messages)/processes_num)
         processes = []
         lark_hook = kwargs.pop('lark_hook', None)
         for i in range(processes_num):
             wrapper = GPTWrapper(config_path=config_path, bias=i, lark_hook=lark_hook)
-            system_prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
-            prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
+            messages_subset = messages[i*chunk_size:(i+1)*chunk_size]
             
-            process = Process(target=__generate_response, args=(wrapper, engine, system_prompts_subset, prompts_subset, f'worker{i}_{fout}'), kwargs=kwargs)
+            process = Process(target=_generate_response, args=(wrapper, engine, messages_subset, f'worker{i}_{fout}'), kwargs=kwargs)
             processes.append(process)
             process.start()
         
@@ -387,13 +396,6 @@ class GPTWrapper:
         error_queue = queue.Queue()
         result_queue = queue.Queue()
         
-        def __wrapper_func(tid: int, wrapper: GPTWrapper, data_chunk: List, *args, **kwargs):
-            try:
-                result = func(tid, wrapper, data_chunk, *args, **kwargs)
-                result_queue.put(result)
-            except Exception as e:
-                error_queue.put((tid, e))
-        
         chunk_size = round(len(data)/threads_num)
         threads = []
         results = []
@@ -401,7 +403,7 @@ class GPTWrapper:
         for i in range(threads_num):
             wrapper = GPTWrapper(config_path=config_path, bias=i, lark_hook=lark_hook)
             data_chunk = data[i*chunk_size:(i+1)*chunk_size]
-            thread = Thread(target=__wrapper_func, args=(i, wrapper, data_chunk, *args), kwargs=kwargs)
+            thread = Thread(target=_wrapper_func, args=(i, result_queue, error_queue, wrapper, func, data_chunk, *args), kwargs=kwargs)
             threads.append(thread)
             thread.start()
         
@@ -421,95 +423,28 @@ class GPTWrapper:
         return results
     
     @staticmethod
-    def single_round_multi_thread(config_path: str, engine: str, threads_num: int, system_prompts: List, prompts: List, fout: str, **kwargs):
-        """Use system prompts and prompts to generate response with multiple threads. If engine is not a chat model, prompt will be formatted
-        as `[System Prompt]: {system_prompt}\\n[Prompt]: {prompt}` if system_prompts is not None.
+    def single_round_multi_thread(config_path: str, engine: str, threads_num: int, messages: List[Union[Dict, str]], fout: str, **kwargs):
+        """
 
         Args:
             config_path (str): Config file path.
             engine (str): GPT engine.
             threads_num (int): Number of threads to use.
-            system_prompts (List): System prompts.
-            prompts (List): Prompts.
+            messages (List[Union[Dict, str]]): List of messages (for chat completions) or prompts (for completions).
             fout (str): Output file. `jsonl` recommended.
 
         Returns:
             List[JSON]: List of results. 
         """
-        assert len(system_prompts) == len(prompts)
-        def __generate_response(wrapper: GPTWrapper, engine: str, system_prompts: List[str], prompts: List[str], fout: str, **kwargs):
-            results = []
-            if os.path.exists(fout):
-                results = [json.loads(s) for s in open(fout, 'r', encoding='utf-8').readlines()]
-                system_prompts = system_prompts[len(results):]
-            prompts = prompts[len(results):]
-            for system_prompt, prompt in zip(system_prompts, prompts):
-                if any(x in engine for x in ['davinci', 'turbo-instruct']):
-                    if system_prompt:
-                        messages = f'[System Prompt]: {system_prompt}\n[Prompt]: {prompt}'
-                    else:
-                        messages = prompt
-                elif any(x in engine for x in ['gpt-3.5', 'gpt-4']):
-                    if system_prompt:
-                        messages = [
-                            {
-                                'role': 'system',
-                                'content': system_prompt
-                            },
-                            {
-                                'role': 'user',
-                                'content': prompt
-                            }
-                        ]
-                    else:
-                        messages = [
-                            {
-                                'role': 'user',
-                                'content': prompt
-                            }
-                        ]
-                else:
-                    raise NotImplementedError('Currently only support `davinci`, `gpt-3.5` and `gpt-4`')
-                get_tokens = kwargs.pop('get_tokens', False)
-                if get_tokens:
-                    response, input_tokens, output_tokens = wrapper.completions_with_backoff(
-                        messages=messages,
-                        engine=engine,
-                        get_tokens=get_tokens,
-                        **kwargs
-                    )
-                    result = {
-                        'system_prompt': system_prompt,
-                        'prompt': prompt,
-                        'response': response,
-                        'input_tokens': input_tokens,
-                        'output_tokens': output_tokens
-                    }
-                else:
-                    response = wrapper.completions_with_backoff(
-                        messages=messages,
-                        engine=engine,
-                        **kwargs
-                    )
-                    result = {
-                        'system_prompt': system_prompt,
-                        'prompt': prompt,
-                        'response': response
-                    }
-                results.append(result)
-                with open(fout, 'a', encoding='utf-8') as fp:
-                    fp.write(json.dumps(result, ensure_ascii=False)+'\n')
-            return results
-        
-        chunk_size = round(len(prompts)/threads_num)
+
+        chunk_size = round(len(messages)/threads_num)
         processes = []
         lark_hook = kwargs.pop('lark_hook', None)
         for i in range(threads_num):
             wrapper = GPTWrapper(config_path=config_path, bias=i, lark_hook=lark_hook)
-            system_prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
-            prompts_subset = system_prompts[i*chunk_size:(i+1)*chunk_size]
+            messages_subset = messages[i*chunk_size:(i+1)*chunk_size]
             
-            process = Thread(target=__generate_response, args=(wrapper, engine, system_prompts_subset, prompts_subset, f'worker{i}_{fout}'), kwargs=kwargs)
+            process = Thread(target=_generate_response, args=(wrapper, engine, messages_subset, f'worker{i}_{fout}'), kwargs=kwargs)
             processes.append(process)
             process.start()
         
